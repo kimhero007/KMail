@@ -40,6 +40,3 @@ World of Warcraft\_forever_\Interface\AddOns\KMail\
 ## 备注
 
 基于 forever 分支 1.60.x 客户端 API 开发，不适用于正式服或怀旧服。
-## 备注
-
-基于 forever 分支 1.60.x 客户端 API 开发，不适用于正式服或怀旧服。
