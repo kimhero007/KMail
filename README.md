@@ -18,7 +18,9 @@
 
 把整个 `KMail` 文件夹放到：
 
+```
 World of Warcraft\_forever_\Interface\AddOns\KMail\
+```
 
 其中应包含 `KMail.lua`、`KMail.toc`、`KMail.png` 三个文件。进游戏后在插件列表启用。
 
