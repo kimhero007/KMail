@@ -2,7 +2,7 @@
 ## Title: KMail 邮件助手
 ## Title-zhCN: KMail 邮件助手
 ## Notes: 一键收取全部邮件 + 好友/公会/收藏通讯录（无限服专用）
-## Version: 1.2.3
+## Version: 1.2.4
 ## IconTexture: Interface\AddOns\KMail\KMail.png
 ## SavedVariables: KMailDB
 ## DefaultState: enabled

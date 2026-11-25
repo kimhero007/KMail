@@ -171,6 +171,8 @@ local loginScanDone = false
 
 -- 发邮件按附件自动填标题（邮寄XX等物品）
 local subjectHooked = false      -- 是否已把钩子挂到官方 SendMailFrame_Update
+local sendHooked = false         -- 是否已把钩子挂到官方 SendMailFrame_SendMail
+local pendingSendRecipient = nil -- 点发送瞬间缓存的收件人（官方成功事件会先清空输入框，故须提前抓）
 local lastAutoSubject = nil      -- 上次由本插件填入的标题；用来识别并覆盖自己的旧值，不碰玩家手输
 
 -- 收取状态
@@ -186,7 +188,7 @@ local TAB_TITLES = {
   fav = "收藏联系人",
   friend = "好友列表",
   guild = "公会成员",
-  recent = "最近寄信人",
+  recent = "最近联系人",
   alt = "我的其他小号",
 }
 local TABS = {
@@ -1080,6 +1082,26 @@ local function InboxHeader(index)
   }
 end
 
+-- 「最近寄信人」：无限服没有独立的"最近联系人"接口，只能从邮件头发件人反推。
+-- 打开邮箱就扫一遍所有来信，邮箱内容变化时重扫；从旧到新记，最新的自然排在最前。
+-- 用签名去重，避免每 0.4 秒轮询反复扫同一批邮件。
+local lastInboxSig = nil
+local function RecordRecentSenders()
+  if type(GetInboxNumItems) ~= "function" then return end
+  local n = GetInboxNumItems() or 0
+  if n <= 0 then return end
+  local h1 = InboxHeader(1)
+  local sig = tostring(n) .. "|" .. tostring(h1 and h1.sender or "")
+  if sig == lastInboxSig then return end   -- 邮箱没变化，不重复扫
+  lastInboxSig = sig
+  for i = n, 1, -1 do
+    local h = InboxHeader(i)
+    if h and h.sender and h.sender ~= "" and not h.isGM then
+      AddRecent(h.sender)
+    end
+  end
+end
+
 -- 每轮都从第一封重新扫，不怕取件后索引漂移；邮箱最多 100 封，开销可忽略
 local function FindAction()
   if type(GetInboxNumItems) ~= "function" or type(GetInboxHeaderInfo) ~= "function" then
@@ -1387,13 +1409,25 @@ end
 
 -- 把钩子挂到官方发信更新函数；Blizzard_MailFrame 可能按需加载，故可在轮询里反复尝试
 local function InstallSubjectHook()
-  if subjectHooked then return end
   if type(hooksecurefunc) ~= "function" then return end
-  if type(SendMailFrame_Update) ~= "function" then return end
-  local ok = pcall(function()
-    hooksecurefunc("SendMailFrame_Update", function() AutoFillSendSubject() end)
-  end)
-  if ok then subjectHooked = true end
+  if not subjectHooked and type(SendMailFrame_Update) == "function" then
+    local ok = pcall(function()
+      hooksecurefunc("SendMailFrame_Update", function() AutoFillSendSubject() end)
+    end)
+    if ok then subjectHooked = true end
+  end
+  -- 关键：官方 MAIL_SEND_SUCCESS 会先 SendMailFrame_Reset() 清空收件人框，
+  -- 所以必须在「点发送」这一刻（框还有内容）把收件人缓存下来，等成功回包再写「最近」。
+  if not sendHooked and type(SendMailFrame_SendMail) == "function" then
+    local ok = pcall(function()
+      hooksecurefunc("SendMailFrame_SendMail", function()
+        if SendMailNameEditBox and SendMailNameEditBox.GetText then
+          pendingSendRecipient = SendMailNameEditBox:GetText()
+        end
+      end)
+    end)
+    if ok then sendHooked = true end
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -1480,15 +1514,19 @@ mainFrame:SetScript("OnEvent", function(self, event, arg1)
   elseif event == "MAIL_CLOSED" then
     mailOpen = false
     lastAutoSubject = nil
+    pendingSendRecipient = nil
     if grabbing then StopGrab("邮箱已关闭") end
     if book then book:Hide() end
     if bar and not barForced then bar:Hide() end
   elseif event == "MAIL_SEND_SUCCESS" then
     lastAutoSubject = nil
-    if SendMailNameEditBox and SendMailNameEditBox.GetText then
-      local name = SendMailNameEditBox:GetText()
-      if name and name ~= "" then AddRecent(name) end
+    -- 官方已清空输入框，优先用「点发送瞬间」缓存的收件人；缓存缺失再回退读框。
+    local name = pendingSendRecipient
+    if (not name or name == "") and SendMailNameEditBox and SendMailNameEditBox.GetText then
+      name = SendMailNameEditBox:GetText()
     end
+    if name and name ~= "" then AddRecent(name) end
+    pendingSendRecipient = nil
   elseif event == "MAIL_INBOX_UPDATE" then
     -- 服务器来信数变了（例如批量收取过程中有人寄信），下轮会重新全量扫描，无需额外处理
   elseif event == "FRIENDLIST_UPDATE" or event == "GUILD_ROSTER_UPDATE" then
@@ -1518,13 +1556,17 @@ mainFrame:SetScript("OnUpdate", function(self, dt)
     pcall(TryAttach)
     -- 自动填标题：第一次挂钩子 + 轮询兜底（钩子没装上时仍能在编辑框打开时生效）
     pcall(InstallSubjectHook)
-    if mailOpen then pcall(AutoFillSendSubject) end
+    if mailOpen then
+      pcall(AutoFillSendSubject)
+      pcall(RecordRecentSenders)   -- 打开邮箱就积累「最近寄信人」（内部按签名去重）
+    end
   end
 end)
 
 local function Help()
   Msg("命令一览：")
   Msg("/km             打开通讯录（收藏 / 好友 / 公会 / 最近 / 自己）")
+  Msg("                 「最近」自动记录最近收发邮件的人，打开邮箱即更新")
   Msg("/km help        显示这份帮助")
   Msg("/km get         一键收取全部金币与附件（不删信）")
   Msg("/km stop        停止收取")
